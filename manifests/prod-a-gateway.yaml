@@ -1,0 +1,40 @@
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: prod-a-gateway
+  namespace: prod-a
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 443
+      name: http
+      protocol: HTTPS
+    tls:
+      mode: PASSTHROUGH
+    hosts:
+    - "prod-a.loft.local"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: prod-a-ingress
+  namespace: prod-a
+spec:
+  hosts:
+  - "prod-a.loft.local"
+  gateways:
+  - prod-a-gateway
+  tls:
+  - match:
+    - port: 443
+      sniHosts:
+      - prod-a.loft.local
+    route:
+    - destination:
+        host: prod-a.prod-a.svc.cluster.local
+        port:
+          number: 443

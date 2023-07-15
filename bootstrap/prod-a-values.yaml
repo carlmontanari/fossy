@@ -1,0 +1,233 @@
+---
+# needed for istio to properly resolve things in host cluster
+fallbackHostDns: true
+
+# duh :)
+enableHA: true
+
+# we dont want this for our demo, but it may be interesting for prod vcluster use cases!
+multiNamespaceMode:
+  enabled: false
+
+# k8s chart needs to have fix to the annotations in daemonset template, temp fix here
+annotations: {}
+
+# enable hostpath mapper -- we don't need this here since we aren't doing anything in the
+# demo that would require this, *but* for resolving pods properly wrt to logging in a
+# vcluster, you would probably want this on in prod type scenarios!
+hostpathMapper:
+  enabled: true
+
+# for jobs and all of the workloads below, drop caps where possible, run rootless,
+# and dont inject istio sidecar (since no point for these things)
+# where applicable crank up replicas to 3
+job:
+  podLabels:
+    sidecar.istio.io/inject: "false"
+  securityContext:
+    capabilities:
+      drop:
+        - ALL
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+
+syncer:
+  replicas: 3
+  podLabels:
+    sidecar.istio.io/inject: "false"
+  extraArgs:
+    # set tls san/kubeconfig host properly for our set up
+    - --tls-san=prod-a.loft.local
+    - --out-kube-config-server=https://prod-a.loft.local:8443
+    # propogate the istio inject label so folks "in" the vcluster can decide
+    # to use or not use istio
+    - --sync-labels=sidecar.istio.io/inject
+    # set pss -> baseline
+    - --enforce-pod-security-standard=baseline
+  securityContext:
+    capabilities:
+      drop:
+        - ALL
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+
+etcd:
+  replicas: 3
+  podLabels:
+    sidecar.istio.io/inject: "false"
+  securityContext:
+    capabilities:
+      drop:
+        - ALL
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+
+controller:
+  replicas: 3
+  podLabels:
+    sidecar.istio.io/inject: "false"
+  securityContext:
+    capabilities:
+      drop:
+        - ALL
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+
+api:
+  replicas: 3
+  podLabels:
+    sidecar.istio.io/inject: "false"
+  securityContext:
+    capabilities:
+      drop:
+        - ALL
+      add:
+      - NET_BIND_SERVICE
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+
+coredns:
+  replicas: 3
+  podLabels:
+    sidecar.istio.io/inject: "false"
+  securityContext:
+    capabilities:
+      drop:
+        - ALL
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+
+# not really needed for the demo, but probably something
+# you would want to do in real life!
+proxy:
+  metricsServer:
+    nodes:
+      enabled: true
+    pods:
+      enabled: true
+
+sync:
+  # sync real nodes, but only matching our node selector; effecitively cordon
+  # the vcluster workloads onto a dedicated node group
+  nodes:
+    enabled: true
+    nodeSelector: "vclusterNodePool=prod-a"
+
+  # for our istio ingress for demo app
+  ingresses:
+    enabled: true
+
+  generic:
+    role:
+      # extra rules for istio things
+      extraRules:
+        - apiGroups: ["networking.istio.io"]
+          resources: ["gateways", "virtualservices", "destinationrules", "serviceentries"]
+          verbs: ["create", "delete", "patch", "update", "get", "list", "watch"]
+
+    clusterRole:
+      # obviously we need to be able to query crds for this!
+      extraRules:
+        - apiGroups: ["apiextensions.k8s.io"]
+          resources: ["customresourcedefinitions"]
+          verbs: ["get", "list", "watch"]
+
+    config: |-
+      version: v1beta1
+      export:
+        - apiVersion: networking.istio.io/v1beta1
+          kind: Gateway
+
+        - apiVersion: networking.istio.io/v1beta1
+          kind: VirtualService
+          patches:
+            # patches the gateway name to the translated name
+            - op: rewriteName
+              path: .spec.gateways[*]
+              regex: "($NAMESPACE/)?$NAME"
+              conditions:
+                - notEqual: "mesh"
+            # patch the destination service to the translated service
+            - op: rewriteName
+              path: .spec.http[*].route[*].destination.host
+              regex: >
+                ^$NAME((\.$NAMESPACE)?(\.svc(\.cluster\.local)?){1})?$
+
+        - apiVersion: networking.istio.io/v1beta1
+          kind: DestinationRule
+          patches:
+            - op: rewriteName
+              path: .spec.exportTo
+              regex: $NAMESPACE
+              conditions:
+                - notEqual: "."
+
+mapServices:
+  # map the kube prometheus service for the vcluster so we have a
+  # predetermined service name (rather than something w/ a hash at the
+  # end) -- this way we dont let grafana *in* the vcluster use hostcluster
+  # fallback dns (which we need for istio) to slurp data out of the host
+  # cluster prometheus!
+  fromVirtual:
+  - from: kube-prometheus/kube-prometheus-kube-prome-prometheus
+    to: kube-prometheus-kube-prome-prometheus
+
+init:
+  helm:
+    # notes:
+    # - dont inject istio bits on anything for the kube monitor stack, we dont care about
+    #   that for any of the demo stuff and really probably you don't need any of that in the mesh!
+    # - set the node exporter port -> 9101 so its not conflicting w/ node exporters
+    #   in the host cluster
+    # - admin/password for grafana -- very secure!
+    # - use istio for ingress
+    # - patch the prometheus data source -> the mapped service above (this prevents the vcluster
+    #   prometheus stack from connecting to the *host cluster prometheus stack* which would cause
+    #   the vcluster stack to actually see all nodes data, not just the nodes we are allowing)
+    - chart:
+        name: kube-prometheus-stack
+        repo: https://prometheus-community.github.io/helm-charts
+        version: 47.1.0
+      values: |-
+        commonLabels:
+          sidecar.istio.io/inject: "false"
+        prometheus:
+          prometheusSpec:
+            scrapeInterval: "3s"
+            evaluationInterval: "5s"
+        prometheus-node-exporter:
+          service:
+            port: 9101
+        grafana:
+          ingress:
+            enabled: true
+            ingressClassName: istio
+            hosts:
+              - prod-a.grafana.loft.local
+          adminPassword: password
+          sidecar:
+            datasources:
+              url: http://kube-prometheus-kube-prome-prometheus.prod-a:9090/
+        alertmanager:
+          enabled: false
+      release:
+        name: kube-prometheus
+        namespace: kube-prometheus

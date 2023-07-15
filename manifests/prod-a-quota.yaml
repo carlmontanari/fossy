@@ -1,0 +1,10 @@
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: prod-a-quota
+  namespace: prod-a
+spec:
+  hard:
+    # should be sitting at 23 pods once everything is spun up!
+    count/pods: 25
